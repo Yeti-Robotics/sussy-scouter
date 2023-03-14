@@ -3,11 +3,47 @@ pub mod models;
 
 use std::{env, sync::Arc, time::Duration};
 
-use chrono::Utc;
+use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
 use lazy_static::lazy_static;
 use models::ScheduleBlock;
 use mongodb::options::ClientOptions;
 use poise::serenity_prelude::{self as serenity, Cache, ChannelId, GuildId, Http};
+
+// Based on where the comp is from utc time (EDT for our team)
+const TZ_OFFSET: i32 = 4;
+
+#[derive(Debug, Clone)]
+struct CompTZ;
+
+impl Offset for CompTZ {
+    fn fix(&self) -> FixedOffset {
+        FixedOffset::west_opt(TZ_OFFSET * 60 * 60).unwrap()
+    }
+}
+
+impl TimeZone for CompTZ {
+    type Offset = CompTZ;
+
+    fn from_offset(_offset: &Self::Offset) -> Self {
+        CompTZ
+    }
+
+    fn offset_from_local_date(&self, _local: &NaiveDate) -> LocalResult<Self> {
+        LocalResult::Single(CompTZ)
+    }
+
+    fn offset_from_local_datetime(&self, _local: &NaiveDateTime) -> LocalResult<Self> {
+        LocalResult::Single(CompTZ)
+    }
+
+    fn offset_from_utc_date(&self, _utc: &NaiveDate) -> Self {
+        CompTZ
+    }
+
+    fn offset_from_utc_datetime(&self, _utc: &NaiveDateTime) -> Self {
+        CompTZ
+    }
+}
 
 // User data, which is stored and accessible in all command invocations
 #[derive(Debug, Clone)]
@@ -97,16 +133,19 @@ async fn ping_scouters_task(
             }
 
             let time_till_block = block.start_time.to_chrono() - now;
-            if time_till_block <= chrono::Duration::minutes(30) && !block.min_30 {
-                // Set that min 30 warning has gone out
-                block.update_min_30(&blocks).await?;
-            } else if time_till_block <= chrono::Duration::minutes(10) && !block.min_10 {
-                // Set that min 10 warning has gone out
-                block.update_min_10(&blocks).await?;
-            } else {
-                // No more warnings to send, continue to next iteration
-                continue;
-            }
+            let scouting_in: String =
+                if time_till_block <= chrono::Duration::minutes(30) && !block.min_30 {
+                    // Set that min 30 warning has gone out
+                    block.update_min_30(&blocks).await?;
+                    "30 minutes".into()
+                } else if time_till_block <= chrono::Duration::minutes(10) && !block.min_10 {
+                    // Set that min 10 warning has gone out
+                    block.update_min_10(&blocks).await?;
+                    "10 minutes".into()
+                } else {
+                    // No more warnings to send, continue to next iteration
+                    continue;
+                };
 
             CHANNEL_ID
                 .send_message(&http, |m| {
@@ -173,9 +212,19 @@ async fn ping_scouters_task(
 
                         e.color((84, 182, 229))
                             .title(format!(
-                                "Scouters for {} - {}",
-                                block.start_time.to_chrono().time().format("%H:%M"),
-                                block.end_time.to_chrono().time().format("%H:%M")
+                                "Scouters for {} - {}, in {scouting_in}",
+                                block
+                                    .start_time
+                                    .to_chrono()
+                                    .with_timezone(&CompTZ)
+                                    .time()
+                                    .format("%H:%M"),
+                                block
+                                    .end_time
+                                    .to_chrono()
+                                    .with_timezone(&CompTZ)
+                                    .time()
+                                    .format("%H:%M")
                             ))
                             .footer(|f| f.text("Sussy scouter has been oxidized 🦀, rejoice!"))
                     })
