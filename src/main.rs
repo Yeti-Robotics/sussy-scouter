@@ -71,9 +71,9 @@ async fn ping(ctx: Context<'_>) -> Result<(), Error> {
 
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
-    dotenvy::dotenv().ok();
-    dotenvy::from_filename(".env.local").ok();
     dotenvy::from_filename(".env.production").ok();
+    dotenvy::from_filename(".env.local").ok();
+    dotenvy::dotenv().ok();
 
     let mongo_options = ClientOptions::parse(&env::var("DB_URI").unwrap()).await?;
     let mongo_client = mongodb::Client::with_options(mongo_options)?;
