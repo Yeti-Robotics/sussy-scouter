@@ -1,6 +1,6 @@
 use futures_util::TryStreamExt;
 use mongodb::{
-    bson::{doc, oid::ObjectId, Bson, Document, DateTime},
+    bson::{doc, oid::ObjectId, Bson, DateTime, Document},
     Collection,
 };
 use serde::{Deserialize, Serialize};
@@ -37,8 +37,8 @@ pub struct ScheduleBlock {
     pub red2: Option<ObjectId>,
     #[serde(default)]
     red3: Option<ObjectId>,
-    pub min_30: bool,
-    pub min_10: bool,
+    pub three_away: bool,
+    pub one_away: bool,
 }
 
 #[derive(Debug, Deserialize, Serialize)]
@@ -46,8 +46,8 @@ pub struct ScheduleBlock {
 pub struct PopulatedScheduleBlock {
     #[serde(rename = "_id")]
     pub _id: ObjectId,
-    pub start_time: DateTime,
-    pub end_time: DateTime,
+    pub start_match: i32,
+    pub last_match: i32,
     #[serde(default)]
     pub blue1: Option<User>,
     #[serde(default)]
@@ -60,8 +60,8 @@ pub struct PopulatedScheduleBlock {
     pub red2: Option<User>,
     #[serde(default)]
     pub red3: Option<User>,
-    pub min_30: bool,
-    pub min_10: bool,
+    pub three_away: bool,
+    pub one_away: bool,
 }
 
 impl ScheduleBlock {
@@ -92,60 +92,60 @@ impl ScheduleBlock {
 }
 
 impl PopulatedScheduleBlock {
-    pub async fn update_min_30(
+    pub async fn update_three_away(
         &mut self,
         collection: &Collection<ScheduleBlock>,
     ) -> Result<(), mongodb::error::Error> {
         collection
             .update_one(
                 doc! { "_id": self._id },
-                doc! { "$set": { "min30": true } },
+                doc! { "$set": { "threeAway": true } },
                 None,
             )
             .await
             .map(|_| {
-                self.min_30 = true;
+                self.three_away = true;
             })
     }
 
-    pub async fn update_min_10(
+    pub async fn update_one_away(
         &mut self,
         collection: &Collection<ScheduleBlock>,
     ) -> Result<(), mongodb::error::Error> {
         collection
             .update_one(
                 doc! { "_id": self._id },
-                doc! { "$set": { "min10": true } },
+                doc! { "$set": { "oneAway": true } },
                 None,
             )
             .await
             .map(|_| {
-                self.min_10 = true;
+                self.one_away = true;
             })
     }
 
     pub fn pings(&self) -> String {
-		// 24 chars per pings for 6 people, one allocation
-		let mut ping = String::with_capacity(24 * 6);
+        // 24 chars per pings for 6 people, one allocation
+        let mut ping = String::with_capacity(24 * 6);
         if let Some(blue1) = self.blue1.as_ref() {
-			ping.push_str(&ping_str(&blue1.discord_id))
-		};
-		if let Some(blue2) = self.blue2.as_ref() {
-			ping.push_str(&ping_str(&blue2.discord_id))
-		};
-		if let Some(blue3) = self.blue3.as_ref() {
-			ping.push_str(&ping_str(&blue3.discord_id))
-		};
-		if let Some(red1) = self.red1.as_ref() {
-			ping.push_str(&ping_str(&red1.discord_id))
-		};
-		if let Some(red2) = self.red2.as_ref() {
-			ping.push_str(&ping_str(&red2.discord_id))
-		};
-		if let Some(red3) = self.red3.as_ref() {
-			ping.push_str(&ping_str(&red3.discord_id))
-		};
+            ping.push_str(&ping_str(&blue1.discord_id))
+        };
+        if let Some(blue2) = self.blue2.as_ref() {
+            ping.push_str(&ping_str(&blue2.discord_id))
+        };
+        if let Some(blue3) = self.blue3.as_ref() {
+            ping.push_str(&ping_str(&blue3.discord_id))
+        };
+        if let Some(red1) = self.red1.as_ref() {
+            ping.push_str(&ping_str(&red1.discord_id))
+        };
+        if let Some(red2) = self.red2.as_ref() {
+            ping.push_str(&ping_str(&red2.discord_id))
+        };
+        if let Some(red3) = self.red3.as_ref() {
+            ping.push_str(&ping_str(&red3.discord_id))
+        };
 
-		ping
+        ping
     }
 }

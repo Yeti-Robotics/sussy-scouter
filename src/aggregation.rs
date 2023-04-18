@@ -58,10 +58,10 @@ lazy_static! {
         },
         doc! {
             "$project": doc! {
-                "startTime": true,
-                "endTime": true,
-                "min10": true,
-                "min30": true,
+                "startMatch": true,
+                "lastMatch": true,
+                "threeAway": true,
+                "oneAway": true,
                 "createdAt": true,
                 "updatedAt": true,
                 "blue1": doc! {

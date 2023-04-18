@@ -1,13 +1,16 @@
 pub mod aggregation;
 pub mod models;
+mod tba;
 
 use std::{env, sync::Arc, time::Duration};
 
-use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone, Utc};
+use chrono::{FixedOffset, LocalResult, NaiveDate, NaiveDateTime, Offset, TimeZone};
 use lazy_static::lazy_static;
 use models::ScheduleBlock;
 use mongodb::options::ClientOptions;
+use parking_lot::Mutex;
 use poise::serenity_prelude::{self as serenity, Cache, ChannelId, GuildId, Http};
+use tba::CompLevel;
 
 // Based on where the comp is from utc time (EDT for our team)
 const TZ_OFFSET: i32 = 4;
@@ -49,6 +52,7 @@ impl TimeZone for CompTZ {
 #[derive(Debug, Clone)]
 struct Data {
     mongo_client: mongodb::Client,
+    latest_match: Arc<Mutex<i32>>,
 }
 type Error = Box<dyn std::error::Error + Send + Sync>;
 type Context<'a> = poise::Context<'a, Data, Error>;
@@ -69,18 +73,33 @@ async fn ping(ctx: Context<'_>) -> Result<(), Error> {
     Ok(())
 }
 
+#[poise::command(slash_command)]
+async fn next_match(ctx: Context<'_>) -> Result<(), Error> {
+    ctx.defer_ephemeral().await?;
+    ctx.say(format!(
+        "The next match is: {}",
+        *ctx.data().latest_match.lock() + 1
+    ))
+    .await?;
+    Ok(())
+}
+
 #[tokio::main]
 async fn main() -> Result<(), Box<dyn std::error::Error>> {
+    #[cfg(not(debug_assertions))]
     dotenvy::from_filename(".env.production").ok();
     dotenvy::from_filename(".env.local").ok();
     dotenvy::dotenv().ok();
 
     let mongo_options = ClientOptions::parse(&env::var("DB_URI").unwrap()).await?;
+    println!("Connected to: {}", std::env::var("DB_URI").unwrap());
     let mongo_client = mongodb::Client::with_options(mongo_options)?;
+
+    println!("Running with event key: {}", tba::EVENT_KEY);
 
     let framework = poise::Framework::builder()
         .options(poise::FrameworkOptions {
-            commands: vec![ping()],
+            commands: vec![ping(), next_match()],
             ..Default::default()
         })
         .token(std::env::var("TOKEN").expect("missing TOKEN in environment"))
@@ -91,9 +110,19 @@ async fn main() -> Result<(), Box<dyn std::error::Error>> {
 
                 let cache = ctx.cache.clone();
                 let http = ctx.http.clone();
-                tokio::spawn(ping_scouters_task(cache, http, mongo_client.clone()));
+                let latest_match = Arc::new(Mutex::new(0));
+                tokio::spawn(ping_scouters_task(
+                    cache,
+                    http,
+                    mongo_client.clone(),
+                    latest_match.clone(),
+                ));
+                tokio::spawn(latest_match_task(latest_match.clone()));
 
-                Ok(Data { mongo_client })
+                Ok(Data {
+                    mongo_client,
+                    latest_match,
+                })
             })
         });
 
@@ -105,20 +134,28 @@ async fn ping_scouters_task(
     cache: Arc<Cache>,
     http: Arc<Http>,
     mongo_client: mongodb::Client,
+    latest_match: Arc<Mutex<i32>>,
 ) -> Result<(), Box<dyn std::error::Error + Send + Sync>> {
     let db = mongo_client.database(&*DB);
     let blocks = db.collection::<ScheduleBlock>("scheduleBlocks");
 
     loop {
         tokio::time::sleep(Duration::from_secs(3)).await;
-        let now = Utc::now();
-        let block = ScheduleBlock::find_all_populated(&blocks)
-            .await?
+        if *latest_match.lock() == 0 {
+            // No matches have been played yet
+            continue;
+        }
+
+        let mut populated_blocks = ok!(ScheduleBlock::find_all_populated(&blocks).await);
+        populated_blocks.sort_by(|a, b| a.start_match.cmp(&b.start_match));
+        let block = populated_blocks
             .into_iter()
             // Remove blocks that have passed
-            .filter(|block| block.start_time.to_chrono() > now)
+            .filter(|block| *latest_match.lock() < block.start_match)
             // Take first block
             .next();
+
+        println!("{block:#?}");
 
         if let Some(mut block) = block {
             // If no scouters, go to next iteration
@@ -132,22 +169,21 @@ async fn ping_scouters_task(
                 continue;
             }
 
-            let time_till_block = block.start_time.to_chrono() - now;
             let scouting_in: String =
-                if time_till_block <= chrono::Duration::minutes(30) && !block.min_30 {
-                    // Set that min 30 warning has gone out
-                    block.update_min_30(&blocks).await?;
-                    "30 minutes".into()
-                } else if time_till_block <= chrono::Duration::minutes(10) && !block.min_10 {
-                    // Set that min 10 warning has gone out
-                    block.update_min_10(&blocks).await?;
-                    "10 minutes".into()
+                if (block.start_match - *latest_match.lock() <= 3) && !block.three_away {
+                    // Set that 3 matches away warning has gone out
+                    ok!(block.update_three_away(&blocks).await);
+                    "3 matches".into()
+                } else if (block.start_match - *latest_match.lock() == 1) && !block.one_away {
+                    // Set that 1 match away warning has gone out
+                    ok!(block.update_one_away(&blocks).await);
+                    "1 match!".into()
                 } else {
                     // No more warnings to send, continue to next iteration
                     continue;
                 };
 
-            CHANNEL_ID
+            ok!(CHANNEL_ID
                 .send_message(&http, |m| {
                     m.content(block.pings()).embed(|e| {
                         if let Some(blue1) = block.blue1 {
@@ -212,28 +248,58 @@ async fn ping_scouters_task(
 
                         e.color((84, 182, 229))
                             .title(format!(
-                                "Scouters for {} - {}, in {scouting_in}",
-                                block
-                                    .start_time
-                                    .to_chrono()
-                                    .with_timezone(&CompTZ)
-                                    .time()
-                                    .format("%H:%M"),
-                                block
-                                    .end_time
-                                    .to_chrono()
-                                    .with_timezone(&CompTZ)
-                                    .time()
-                                    .format("%H:%M")
+                                "Scouters for match {} - {}, in {scouting_in}",
+                                block.start_match, block.last_match
                             ))
                             .footer(|f| f.text("Sussy scouter has been oxidized 🦀, rejoice!"))
                     })
                 })
-                .await?;
+                .await);
         }
+    }
+}
+
+async fn latest_match_task(latest_match: Arc<Mutex<i32>>) -> Result<(), reqwest::Error> {
+    loop {
+        tokio::time::sleep(Duration::from_secs(10)).await;
+        // It works or im dont care
+        match tba::matches().await {
+            Ok(mut new_matches) => {
+                // Sort from high to low
+                new_matches.sort_by(|a, b| b.match_number.cmp(&a.match_number));
+                for qual_match in new_matches
+                    .into_iter()
+                    .filter(|m| m.comp_level == CompLevel::Qual)
+                {
+                    // Go through from high to low and first completed one is the new latest
+                    if let Some(_) = qual_match.winning_alliance {
+                        // Match is completed
+                        *latest_match.lock() = 10;
+                        break;
+                    }
+                }
+            }
+            Err(err) => {
+                println!("Failed to get new matches: {err:?}");
+                continue;
+            }
+        };
     }
 }
 
 fn ping_str(str: impl AsRef<str>) -> String {
     format!("<@{}>", str.as_ref())
+}
+
+#[macro_export]
+macro_rules! ok {
+    ($result:expr) => {
+        match $result {
+            Ok(t) => t,
+            Err(err) => {
+                eprintln!("{err:?}");
+                continue;
+            }
+        }
+    };
 }
