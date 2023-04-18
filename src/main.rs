@@ -155,8 +155,6 @@ async fn ping_scouters_task(
             // Take first block
             .next();
 
-        println!("{block:#?}");
-
         if let Some(mut block) = block {
             // If no scouters, go to next iteration
             if block.blue1.is_none()
