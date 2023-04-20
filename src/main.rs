@@ -272,7 +272,7 @@ async fn latest_match_task(latest_match: Arc<Mutex<i32>>) -> Result<(), reqwest:
                     // Go through from high to low and first completed one is the new latest
                     if let Some(_) = qual_match.winning_alliance {
                         // Match is completed
-                        *latest_match.lock() = 10;
+                        *latest_match.lock() = qual_match.match_number;
                         break;
                     }
                 }

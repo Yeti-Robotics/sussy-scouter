@@ -16,7 +16,7 @@ lazy_static! {
         .unwrap();
 }
 
-pub const EVENT_KEY: &'static str = "2023nccmp";
+pub const EVENT_KEY: &'static str = "2023joh";
 
 #[derive(Debug, Deserialize, PartialEq, Eq)]
 pub enum CompLevel {
